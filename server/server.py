@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import string
 import time
@@ -138,9 +139,9 @@ async def handler(ws):
 
 
 async def main():
-    port = 8080
+    port = int(os.environ.get("PORT", 8080))
     async with serve(handler, "0.0.0.0", port):
-        print(f"Sync-Watch server running on ws://localhost:{port}")
+        print(f"Sync-Watch server running on port {port}")
         await asyncio.get_running_loop().create_future()  # run forever
 
 
