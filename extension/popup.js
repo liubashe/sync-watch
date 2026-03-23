@@ -9,6 +9,7 @@ const roomIdEl = document.getElementById('room-id');
 const roomRoleEl = document.getElementById('room-role');
 const roomCountEl = document.getElementById('room-count');
 const toastEl = document.getElementById('toast');
+let connectTimeout = null;
 
 function showView(view) {
   viewLobby.classList.remove('active');
@@ -32,7 +33,21 @@ function updateRoomView(roomId, count, isHost) {
   showView(viewRoom);
 }
 
-// Restore state on popup open
+function startConnectTimeout() {
+  clearConnectTimeout();
+  connectTimeout = setTimeout(() => {
+    resetButtons();
+    showToast('连接超时，请检查服务器地址');
+  }, 10000);
+}
+
+function clearConnectTimeout() {
+  if (connectTimeout) {
+    clearTimeout(connectTimeout);
+    connectTimeout = null;
+  }
+}
+
 chrome.runtime.sendMessage({ type: 'get_state' }, (state) => {
   if (chrome.runtime.lastError) return;
   if (state && state.roomId) {
@@ -51,6 +66,7 @@ btnCreate.addEventListener('click', () => {
   }
   btnCreate.disabled = true;
   btnCreate.textContent = '连接中...';
+  startConnectTimeout();
   chrome.runtime.sendMessage({ type: 'create_room', serverUrl });
 });
 
@@ -67,6 +83,7 @@ btnJoin.addEventListener('click', () => {
   }
   btnJoin.disabled = true;
   btnJoin.textContent = '连接中...';
+  startConnectTimeout();
   chrome.runtime.sendMessage({ type: 'join_room', serverUrl, roomId: code });
 });
 
@@ -85,6 +102,7 @@ function resetButtons() {
   btnCreate.textContent = '创建房间';
   btnJoin.disabled = false;
   btnJoin.textContent = '加入房间';
+  clearConnectTimeout();
 }
 
 chrome.runtime.onMessage.addListener((msg) => {

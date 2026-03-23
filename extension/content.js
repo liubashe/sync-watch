@@ -2,10 +2,11 @@
   let video = null;
   let isSyncing = false;
   let isHost = false;
+  let inRoom = false;
   let heartbeatInterval = null;
+  let keepAliveInterval = null;
   let contextValid = true;
   const SYNC_THRESHOLD = 0.5;
-  const HARD_SYNC_THRESHOLD = 3.0;
   const LOG_PREFIX = '[SyncWatch]';
 
   function log(...args) {
@@ -18,6 +19,7 @@
     log('Extension context lost, cleaning up');
     detachVideoListeners();
     stopHeartbeat();
+    stopKeepAlive();
     if (observer) observer.disconnect();
   }
 
@@ -30,15 +32,13 @@
     ];
     for (const sel of selectors) {
       const el = document.querySelector(sel);
-      if (el && el.src) return el;
+      if (el) return el;
     }
-    // Fallback: any video element
     const all = document.querySelectorAll('video');
     for (const v of all) {
       if (v.readyState > 0 || v.src || v.currentSrc) return v;
     }
     if (all.length > 0) return all[0];
-    // Check shadow DOMs
     const allElements = document.querySelectorAll('*');
     for (const el of allElements) {
       if (el.shadowRoot) {
@@ -78,19 +78,19 @@
   }
 
   function onPlay() {
-    if (isSyncing || !contextValid) return;
+    if (isSyncing || !contextValid || !inRoom) return;
     log('Local play at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'play', time: video.currentTime });
   }
 
   function onPause() {
-    if (isSyncing || !contextValid) return;
+    if (isSyncing || !contextValid || !inRoom) return;
     log('Local pause at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'pause', time: video.currentTime });
   }
 
   function onSeeked() {
-    if (isSyncing || !contextValid) return;
+    if (isSyncing || !contextValid || !inRoom) return;
     log('Local seek to', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'seek', time: video.currentTime, paused: video.paused });
   }
@@ -161,7 +161,7 @@
     stopHeartbeat();
     log('Starting heartbeat (host mode)');
     heartbeatInterval = setInterval(() => {
-      if (video && isHost) {
+      if (video && isHost && contextValid) {
         sendToBackground({ type: 'heartbeat', time: video.currentTime, paused: video.paused });
       }
     }, 3000);
@@ -174,8 +174,25 @@
     }
   }
 
+  function startKeepAlive() {
+    stopKeepAlive();
+    keepAliveInterval = setInterval(() => {
+      if (contextValid && inRoom) {
+        sendToBackground({ type: 'keep_alive' });
+      }
+    }, 20000);
+  }
+
+  function stopKeepAlive() {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+      keepAliveInterval = null;
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg) => {
-    log('Received message:', msg.type);
+    if (msg.type === 'keep_alive') return;
+    log('Received message:', msg.type, msg.action || '');
 
     if (msg.type === 'sync_event') {
       syncAction(msg.action, msg.time, msg.paused);
@@ -191,26 +208,28 @@
       }
     } else if (msg.type === 'role_update') {
       isHost = msg.isHost;
+      inRoom = true;
       log('Role updated: isHost =', isHost);
       if (isHost) {
         startHeartbeat();
       } else {
         stopHeartbeat();
       }
+      startKeepAlive();
     } else if (msg.type === 'room_left') {
       isHost = false;
+      inRoom = false;
       stopHeartbeat();
+      stopKeepAlive();
       log('Left room');
     }
   });
 
   waitForVideo((v) => {
     attachVideoListeners(v);
-    ready = true;
     sendToBackground({ type: 'content_ready' });
   });
 
-  // Re-detect video on DOM changes (SPA navigation)
   let debounceTimer = null;
   let observer = new MutationObserver(() => {
     if (!contextValid || debounceTimer) return;
