@@ -1,5 +1,5 @@
 let ws = null;
-let serverUrl = 'ws://localhost:8080';
+let serverUrl = 'wss://sync-watch-syvr.onrender.com';
 let roomId = null;
 let isHost = false;
 let reconnectTimer = null;
