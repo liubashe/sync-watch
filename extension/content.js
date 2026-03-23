@@ -3,13 +3,22 @@
   let isSyncing = false;
   let isHost = false;
   let heartbeatInterval = null;
-  let ready = false;
+  let contextValid = true;
   const SYNC_THRESHOLD = 0.5;
   const HARD_SYNC_THRESHOLD = 3.0;
   const LOG_PREFIX = '[SyncWatch]';
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
+  }
+
+  function cleanup() {
+    if (!contextValid) return;
+    contextValid = false;
+    log('Extension context lost, cleaning up');
+    detachVideoListeners();
+    stopHeartbeat();
+    if (observer) observer.disconnect();
   }
 
   function findVideo() {
@@ -58,27 +67,30 @@
   }
 
   function sendToBackground(msg) {
+    if (!contextValid) return;
     try {
-      chrome.runtime.sendMessage(msg).catch(() => {});
+      chrome.runtime.sendMessage(msg).catch((e) => {
+        if (e.message?.includes('Extension context invalidated')) cleanup();
+      });
     } catch (e) {
-      log('Failed to send to background:', e.message);
+      if (e.message?.includes('Extension context invalidated')) cleanup();
     }
   }
 
   function onPlay() {
-    if (isSyncing) return;
+    if (isSyncing || !contextValid) return;
     log('Local play at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'play', time: video.currentTime });
   }
 
   function onPause() {
-    if (isSyncing) return;
+    if (isSyncing || !contextValid) return;
     log('Local pause at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'pause', time: video.currentTime });
   }
 
   function onSeeked() {
-    if (isSyncing) return;
+    if (isSyncing || !contextValid) return;
     log('Local seek to', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'seek', time: video.currentTime, paused: video.paused });
   }
@@ -200,16 +212,17 @@
 
   // Re-detect video on DOM changes (SPA navigation)
   let debounceTimer = null;
-  const observer = new MutationObserver(() => {
-    if (debounceTimer) return;
+  let observer = new MutationObserver(() => {
+    if (!contextValid || debounceTimer) return;
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
+      if (!contextValid) return;
       const v = findVideo();
       if (v && v !== video) {
         attachVideoListeners(v);
         log('Video element changed, re-attached');
       }
-    }, 500);
+    }, 1000);
   });
   observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
 
