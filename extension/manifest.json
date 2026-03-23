@@ -3,7 +3,7 @@
   "name": "Sync Watch",
   "version": "1.0.0",
   "description": "与朋友同步观看视频 - Synchronized video watching with friends",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "tabs"],
   "host_permissions": [
     "*://*.youtube.com/*",
     "*://*.bilibili.com/*"

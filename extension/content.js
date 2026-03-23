@@ -3,21 +3,32 @@
   let isSyncing = false;
   let isHost = false;
   let heartbeatInterval = null;
+  let ready = false;
   const SYNC_THRESHOLD = 0.5;
   const HARD_SYNC_THRESHOLD = 3.0;
+  const LOG_PREFIX = '[SyncWatch]';
+
+  function log(...args) {
+    console.log(LOG_PREFIX, ...args);
+  }
 
   function findVideo() {
-    // Try common selectors first, then fallback to generic
     const selectors = [
-      'video',
       '#movie_player video',
       '.bpx-player-video-wrap video',
       '.bilibili-player-video video',
+      'video',
     ];
     for (const sel of selectors) {
       const el = document.querySelector(sel);
-      if (el) return el;
+      if (el && el.src) return el;
     }
+    // Fallback: any video element
+    const all = document.querySelectorAll('video');
+    for (const v of all) {
+      if (v.readyState > 0 || v.src || v.currentSrc) return v;
+    }
+    if (all.length > 0) return all[0];
     // Check shadow DOMs
     const allElements = document.querySelectorAll('*');
     for (const el of allElements) {
@@ -29,44 +40,57 @@
     return null;
   }
 
-  function waitForVideo(callback, maxAttempts = 30) {
+  function waitForVideo(callback, maxAttempts = 60) {
     let attempts = 0;
     const check = () => {
       const v = findVideo();
       if (v) {
+        log('Video element found');
         callback(v);
       } else if (attempts < maxAttempts) {
         attempts++;
         setTimeout(check, 1000);
+      } else {
+        log('Video element not found after', maxAttempts, 'attempts');
       }
     };
     check();
   }
 
   function sendToBackground(msg) {
-    chrome.runtime.sendMessage(msg);
+    try {
+      chrome.runtime.sendMessage(msg).catch(() => {});
+    } catch (e) {
+      log('Failed to send to background:', e.message);
+    }
   }
 
   function onPlay() {
     if (isSyncing) return;
+    log('Local play at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'play', time: video.currentTime });
   }
 
   function onPause() {
     if (isSyncing) return;
+    log('Local pause at', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'pause', time: video.currentTime });
   }
 
   function onSeeked() {
     if (isSyncing) return;
+    log('Local seek to', video.currentTime);
     sendToBackground({ type: 'sync_event', action: 'seek', time: video.currentTime, paused: video.paused });
   }
 
   function attachVideoListeners(v) {
+    if (video === v) return;
+    detachVideoListeners();
     video = v;
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
     video.addEventListener('seeked', onSeeked);
+    log('Attached listeners to video element');
   }
 
   function detachVideoListeners() {
@@ -77,8 +101,12 @@
   }
 
   function syncAction(action, time, paused) {
-    if (!video) return;
+    if (!video) {
+      log('syncAction: no video element');
+      return;
+    }
     isSyncing = true;
+    log('Remote', action, 'to', time);
 
     if (action === 'play') {
       video.currentTime = time;
@@ -95,7 +123,7 @@
       }
     }
 
-    setTimeout(() => { isSyncing = false; }, 300);
+    setTimeout(() => { isSyncing = false; }, 500);
   }
 
   function syncToTime(targetTime, paused) {
@@ -105,12 +133,8 @@
     if (drift < SYNC_THRESHOLD) return;
 
     isSyncing = true;
-    if (drift > HARD_SYNC_THRESHOLD) {
-      video.currentTime = targetTime;
-    } else {
-      // Smooth adjustment via playback rate
-      video.currentTime = targetTime;
-    }
+    log('Correcting drift:', drift.toFixed(2), 's');
+    video.currentTime = targetTime;
 
     if (paused && !video.paused) {
       video.pause();
@@ -118,11 +142,12 @@
       video.play().catch(() => {});
     }
 
-    setTimeout(() => { isSyncing = false; }, 300);
+    setTimeout(() => { isSyncing = false; }, 500);
   }
 
   function startHeartbeat() {
     stopHeartbeat();
+    log('Starting heartbeat (host mode)');
     heartbeatInterval = setInterval(() => {
       if (video && isHost) {
         sendToBackground({ type: 'heartbeat', time: video.currentTime, paused: video.paused });
@@ -138,6 +163,8 @@
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
+    log('Received message:', msg.type);
+
     if (msg.type === 'sync_event') {
       syncAction(msg.action, msg.time, msg.paused);
     } else if (msg.type === 'heartbeat') {
@@ -152,6 +179,7 @@
       }
     } else if (msg.type === 'role_update') {
       isHost = msg.isHost;
+      log('Role updated: isHost =', isHost);
       if (isHost) {
         startHeartbeat();
       } else {
@@ -160,22 +188,30 @@
     } else if (msg.type === 'room_left') {
       isHost = false;
       stopHeartbeat();
+      log('Left room');
     }
   });
 
-  // Detect video element on page load / SPA navigation
   waitForVideo((v) => {
     attachVideoListeners(v);
+    ready = true;
     sendToBackground({ type: 'content_ready' });
   });
 
   // Re-detect video on DOM changes (SPA navigation)
+  let debounceTimer = null;
   const observer = new MutationObserver(() => {
-    const v = findVideo();
-    if (v && v !== video) {
-      detachVideoListeners();
-      attachVideoListeners(v);
-    }
+    if (debounceTimer) return;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      const v = findVideo();
+      if (v && v !== video) {
+        attachVideoListeners(v);
+        log('Video element changed, re-attached');
+      }
+    }, 500);
   });
   observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+
+  log('Content script loaded on', window.location.hostname);
 })();

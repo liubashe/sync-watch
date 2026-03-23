@@ -3,24 +3,64 @@ let serverUrl = 'ws://localhost:8080';
 let roomId = null;
 let isHost = false;
 let reconnectTimer = null;
-let activeTabId = null;
+
+async function getActiveVideoTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) return tab.id;
+    const tabs = await chrome.tabs.query({ active: true });
+    return tabs.length > 0 ? tabs[0].id : null;
+  } catch {
+    return null;
+  }
+}
+
+async function notifyContent(msg) {
+  const tabId = await getActiveVideoTab();
+  if (tabId) {
+    chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+  }
+}
+
+function notifyPopup(msg) {
+  chrome.runtime.sendMessage(msg).catch(() => {});
+}
+
+function saveState() {
+  chrome.storage.local.set({ roomId, isHost, serverUrl });
+}
+
+function ensureConnected() {
+  if (ws && ws.readyState === WebSocket.OPEN) return true;
+  if (ws && ws.readyState === WebSocket.CONNECTING) return true;
+  if (roomId) {
+    connect(() => sendToServer({ type: 'join_room', roomId }));
+  }
+  return false;
+}
 
 function connect(onOpen) {
   disconnect();
-
-  ws = new WebSocket(serverUrl);
+  try {
+    ws = new WebSocket(serverUrl);
+  } catch (e) {
+    scheduleReconnect();
+    return;
+  }
 
   ws.onopen = () => {
+    console.log('[SyncWatch] WebSocket connected');
     if (onOpen) onOpen();
   };
 
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
     let msg;
     try {
       msg = JSON.parse(event.data);
     } catch {
       return;
     }
+    console.log('[SyncWatch] Received:', msg.type);
 
     switch (msg.type) {
       case 'room_created':
@@ -28,7 +68,7 @@ function connect(onOpen) {
         isHost = true;
         saveState();
         notifyPopup({ type: 'room_created', roomId: msg.roomId, count: msg.count, isHost: true });
-        notifyContent({ type: 'role_update', isHost: true });
+        await notifyContent({ type: 'role_update', isHost: true });
         break;
 
       case 'room_joined':
@@ -36,13 +76,10 @@ function connect(onOpen) {
         isHost = false;
         saveState();
         notifyPopup({ type: 'room_joined', roomId: msg.roomId, count: msg.count, isHost: false });
-        notifyContent({ type: 'role_update', isHost: false });
+        await notifyContent({ type: 'role_update', isHost: false });
         break;
 
       case 'room_update':
-        if (msg.hostChanged) {
-          // Someone else might have been promoted, but if we get promoted, it comes separately
-        }
         notifyPopup({ type: 'room_update', count: msg.count });
         break;
 
@@ -50,23 +87,14 @@ function connect(onOpen) {
         isHost = true;
         saveState();
         notifyPopup({ type: 'promoted', roomId: msg.roomId });
-        notifyContent({ type: 'role_update', isHost: true });
+        await notifyContent({ type: 'role_update', isHost: true });
         break;
 
       case 'sync_event':
-        notifyContent(msg);
-        break;
-
       case 'heartbeat':
-        notifyContent(msg);
-        break;
-
       case 'sync_state':
-        notifyContent(msg);
-        break;
-
       case 'request_state':
-        notifyContent(msg);
+        await notifyContent(msg);
         break;
 
       case 'error':
@@ -76,13 +104,12 @@ function connect(onOpen) {
   };
 
   ws.onclose = () => {
+    console.log('[SyncWatch] WebSocket closed');
     ws = null;
     scheduleReconnect();
   };
 
-  ws.onerror = () => {
-    // onclose will fire after this
-  };
+  ws.onerror = () => {};
 }
 
 function disconnect() {
@@ -97,6 +124,7 @@ function scheduleReconnect() {
   if (!roomId) return;
   clearReconnect();
   reconnectTimer = setTimeout(() => {
+    console.log('[SyncWatch] Reconnecting...');
     connect(() => {
       if (roomId) {
         sendToServer({ type: 'join_room', roomId });
@@ -115,25 +143,9 @@ function clearReconnect() {
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
+    return true;
   }
-}
-
-function notifyContent(msg) {
-  if (activeTabId) {
-    chrome.tabs.sendMessage(activeTabId, msg).catch(() => {});
-  }
-}
-
-function notifyPopup(msg) {
-  chrome.runtime.sendMessage(msg).catch(() => {});
-}
-
-function saveState() {
-  chrome.storage.local.set({ roomId, isHost, serverUrl });
-}
-
-function loadState() {
-  return chrome.storage.local.get(['roomId', 'isHost', 'serverUrl']);
+  return false;
 }
 
 function leaveRoom() {
@@ -144,12 +156,18 @@ function leaveRoom() {
   notifyContent({ type: 'room_left' });
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Messages from content script have sender.tab
-  if (sender.tab) {
-    activeTabId = sender.tab.id;
+// Restore state on service worker startup
+chrome.storage.local.get(['roomId', 'isHost', 'serverUrl'], (state) => {
+  if (state.serverUrl) serverUrl = state.serverUrl;
+  if (state.roomId) {
+    roomId = state.roomId;
+    isHost = state.isHost || false;
+    console.log('[SyncWatch] Restoring room:', roomId);
+    connect(() => sendToServer({ type: 'join_room', roomId }));
   }
+});
 
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
     case 'create_room':
       if (msg.serverUrl) serverUrl = msg.serverUrl;
@@ -167,14 +185,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'sync_event':
-      sendToServer(msg);
-      break;
-
     case 'heartbeat':
-      sendToServer(msg);
-      break;
-
     case 'state_response':
+      ensureConnected();
       sendToServer(msg);
       break;
 
@@ -183,17 +196,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'content_ready':
-      if (sender.tab) {
-        activeTabId = sender.tab.id;
-        if (roomId) {
-          chrome.tabs.sendMessage(activeTabId, { type: 'role_update', isHost }).catch(() => {});
-        }
+      console.log('[SyncWatch] Content script ready, tab:', sender.tab?.id);
+      if (roomId) {
+        notifyContent({ type: 'role_update', isHost });
+        ensureConnected();
       }
       break;
   }
-});
-
-// Track active tab changes
-chrome.tabs.onActivated.addListener((info) => {
-  activeTabId = info.tabId;
 });
