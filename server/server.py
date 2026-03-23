@@ -2,11 +2,9 @@ import asyncio
 import json
 import os
 import random
-import string
 import time
-from http import HTTPStatus
-from websockets.asyncio.server import serve
-from websockets.http11 import Response
+
+from aiohttp import web
 
 rooms = {}  # roomId -> { "host": ws, "clients": set(ws) }
 
@@ -20,21 +18,17 @@ def generate_room_id():
             return rid
 
 
-def send_json(ws, obj):
-    return ws.send(json.dumps(obj))
-
-
 async def broadcast(room_id, message, exclude=None):
     room = rooms.get(room_id)
     if not room:
         return
     data = json.dumps(message) if isinstance(message, dict) else message
-    tasks = []
     for client in list(room["clients"]):
         if client is not exclude:
-            tasks.append(client.send(data))
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await client.send_str(data)
+            except Exception:
+                pass
 
 
 def remove_from_room(ws):
@@ -62,17 +56,22 @@ async def handle_disconnect(ws):
         return
     room = rooms[room_id]
     if action == "host_left_promoted":
-        await send_json(room["host"], {"type": "promoted", "roomId": room_id})
+        await room["host"].send_str(json.dumps({"type": "promoted", "roomId": room_id}))
         await broadcast(room_id, {"type": "room_update", "count": len(room["clients"]), "hostChanged": True})
     elif action == "client_left":
         await broadcast(room_id, {"type": "room_update", "count": len(room["clients"])})
 
 
-async def handler(ws):
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
     try:
-        async for raw in ws:
+        async for raw_msg in ws:
+            if raw_msg.type != web.WSMsgType.TEXT:
+                continue
             try:
-                msg = json.loads(raw)
+                msg = json.loads(raw_msg.data)
             except json.JSONDecodeError:
                 continue
 
@@ -83,20 +82,20 @@ async def handler(ws):
                 room_id = generate_room_id()
                 rooms[room_id] = {"host": ws, "clients": {ws}}
                 ws._room_id = room_id
-                await send_json(ws, {"type": "room_created", "roomId": room_id, "count": 1})
+                await ws.send_str(json.dumps({"type": "room_created", "roomId": room_id, "count": 1}))
 
             elif msg_type == "join_room":
                 room_id = (msg.get("roomId") or "").upper()
                 room = rooms.get(room_id)
                 if not room:
-                    await send_json(ws, {"type": "error", "message": "房间不存在"})
+                    await ws.send_str(json.dumps({"type": "error", "message": "房间不存在"}))
                     continue
                 await handle_disconnect(ws)
                 room["clients"].add(ws)
                 ws._room_id = room_id
-                await send_json(ws, {"type": "room_joined", "roomId": room_id, "count": len(room["clients"])})
+                await ws.send_str(json.dumps({"type": "room_joined", "roomId": room_id, "count": len(room["clients"])}))
                 await broadcast(room_id, {"type": "room_update", "count": len(room["clients"])}, exclude=ws)
-                await send_json(room["host"], {"type": "request_state"})
+                await room["host"].send_str(json.dumps({"type": "request_state"}))
 
             elif msg_type == "sync_event":
                 room_id = getattr(ws, '_room_id', None)
@@ -139,19 +138,20 @@ async def handler(ws):
     finally:
         await handle_disconnect(ws)
 
-
-def health_check(connection, request):
-    if request.path == "/health":
-        return Response(HTTPStatus.OK, "OK\n", connection.response_headers)
-    return None
+    return ws
 
 
-async def main():
-    port = int(os.environ.get("PORT", 8080))
-    async with serve(handler, "0.0.0.0", port, process_request=health_check):
-        print(f"Sync-Watch server running on port {port}")
-        await asyncio.get_running_loop().create_future()  # run forever
+async def health_handler(request):
+    return web.Response(text="OK")
 
+
+app = web.Application()
+app.router.add_get("/", websocket_handler)
+app.router.add_get("/health", health_handler)
+app.router.add_route("HEAD", "/", health_handler)
+app.router.add_route("HEAD", "/health", health_handler)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Sync-Watch server running on port {port}")
+    web.run_app(app, host="0.0.0.0", port=port)
