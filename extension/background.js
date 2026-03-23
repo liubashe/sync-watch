@@ -3,6 +3,33 @@ let serverUrl = 'ws://localhost:8080';
 let roomId = null;
 let isHost = false;
 let reconnectTimer = null;
+let stateReady = false;
+let pendingMessages = [];
+
+// Load saved state FIRST on service worker startup
+const stateLoadPromise = new Promise((resolve) => {
+  chrome.storage.local.get(['roomId', 'isHost', 'serverUrl'], (state) => {
+    if (state.serverUrl) serverUrl = state.serverUrl;
+    if (state.roomId) {
+      roomId = state.roomId;
+      isHost = state.isHost || false;
+      console.log('[SyncWatch BG] Restored state: room=' + roomId + ' isHost=' + isHost + ' server=' + serverUrl);
+      connect(() => {
+        console.log('[SyncWatch BG] Reconnected, rejoining room', roomId);
+        sendToServer({ type: 'join_room', roomId });
+      });
+    } else {
+      console.log('[SyncWatch BG] No saved room state');
+    }
+    stateReady = true;
+    // Process any messages that arrived before state was loaded
+    for (const pm of pendingMessages) {
+      processMessage(pm.msg, pm.sender, pm.sendResponse);
+    }
+    pendingMessages = [];
+    resolve();
+  });
+});
 
 async function getActiveVideoTab() {
   try {
@@ -18,7 +45,12 @@ async function getActiveVideoTab() {
 async function notifyContent(msg) {
   const tabId = await getActiveVideoTab();
   if (tabId) {
-    chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+    console.log('[SyncWatch BG] → content tab(' + tabId + '):', msg.type);
+    chrome.tabs.sendMessage(tabId, msg).catch((e) => {
+      console.log('[SyncWatch BG] Failed to notify content:', e.message);
+    });
+  } else {
+    console.log('[SyncWatch BG] No active tab to notify');
   }
 }
 
@@ -30,26 +62,19 @@ function saveState() {
   chrome.storage.local.set({ roomId, isHost, serverUrl });
 }
 
-function ensureConnected() {
-  if (ws && ws.readyState === WebSocket.OPEN) return true;
-  if (ws && ws.readyState === WebSocket.CONNECTING) return true;
-  if (roomId) {
-    connect(() => sendToServer({ type: 'join_room', roomId }));
-  }
-  return false;
-}
-
 function connect(onOpen) {
   disconnect();
+  console.log('[SyncWatch BG] Connecting to', serverUrl);
   try {
     ws = new WebSocket(serverUrl);
   } catch (e) {
+    console.log('[SyncWatch BG] WebSocket creation failed:', e.message);
     scheduleReconnect();
     return;
   }
 
   ws.onopen = () => {
-    console.log('[SyncWatch] WebSocket connected');
+    console.log('[SyncWatch BG] WebSocket OPEN');
     if (onOpen) onOpen();
   };
 
@@ -60,7 +85,7 @@ function connect(onOpen) {
     } catch {
       return;
     }
-    console.log('[SyncWatch] Received:', msg.type);
+    console.log('[SyncWatch BG] ← server:', msg.type, msg.action || '');
 
     switch (msg.type) {
       case 'room_created':
@@ -104,12 +129,14 @@ function connect(onOpen) {
   };
 
   ws.onclose = () => {
-    console.log('[SyncWatch] WebSocket closed');
+    console.log('[SyncWatch BG] WebSocket CLOSED');
     ws = null;
     scheduleReconnect();
   };
 
-  ws.onerror = () => {};
+  ws.onerror = (e) => {
+    console.log('[SyncWatch BG] WebSocket ERROR');
+  };
 }
 
 function disconnect() {
@@ -124,11 +151,9 @@ function scheduleReconnect() {
   if (!roomId) return;
   clearReconnect();
   reconnectTimer = setTimeout(() => {
-    console.log('[SyncWatch] Reconnecting...');
+    console.log('[SyncWatch BG] Reconnecting...');
     connect(() => {
-      if (roomId) {
-        sendToServer({ type: 'join_room', roomId });
-      }
+      if (roomId) sendToServer({ type: 'join_room', roomId });
     });
   }, 3000);
 }
@@ -142,8 +167,22 @@ function clearReconnect() {
 
 function sendToServer(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
+    console.log('[SyncWatch BG] → server:', msg.type, msg.action || '');
     ws.send(JSON.stringify(msg));
     return true;
+  }
+  console.log('[SyncWatch BG] Cannot send, ws state:', ws ? ws.readyState : 'null');
+  return false;
+}
+
+function ensureConnected() {
+  if (ws && ws.readyState === WebSocket.OPEN) return true;
+  if (ws && ws.readyState === WebSocket.CONNECTING) return true;
+  if (roomId && serverUrl) {
+    console.log('[SyncWatch BG] Reconnecting (ensureConnected)');
+    connect(() => {
+      if (roomId) sendToServer({ type: 'join_room', roomId });
+    });
   }
   return false;
 }
@@ -156,18 +195,7 @@ function leaveRoom() {
   notifyContent({ type: 'room_left' });
 }
 
-// Restore state on service worker startup
-chrome.storage.local.get(['roomId', 'isHost', 'serverUrl'], (state) => {
-  if (state.serverUrl) serverUrl = state.serverUrl;
-  if (state.roomId) {
-    roomId = state.roomId;
-    isHost = state.isHost || false;
-    console.log('[SyncWatch] Restoring room:', roomId);
-    connect(() => sendToServer({ type: 'join_room', roomId }));
-  }
-});
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+function processMessage(msg, sender, sendResponse) {
   switch (msg.type) {
     case 'create_room':
       if (msg.serverUrl) serverUrl = msg.serverUrl;
@@ -192,15 +220,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'get_state':
-      sendResponse({ roomId, isHost, serverUrl, connected: ws && ws.readyState === WebSocket.OPEN });
-      return true;
+      if (sendResponse) {
+        sendResponse({ roomId, isHost, serverUrl, connected: ws && ws.readyState === WebSocket.OPEN });
+      }
+      break;
 
     case 'content_ready':
-      console.log('[SyncWatch] Content script ready, tab:', sender.tab?.id);
+      console.log('[SyncWatch BG] Content script ready');
       if (roomId) {
-        notifyContent({ type: 'role_update', isHost });
         ensureConnected();
+        notifyContent({ type: 'role_update', isHost });
       }
       break;
   }
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!stateReady) {
+    console.log('[SyncWatch BG] State not ready, queuing:', msg.type);
+    pendingMessages.push({ msg, sender, sendResponse });
+    return true;
+  }
+  processMessage(msg, sender, sendResponse);
+  if (msg.type === 'get_state') return true;
 });
+
+// Keep service worker alive while in a room
+setInterval(() => {
+  if (roomId && ws && ws.readyState === WebSocket.OPEN) {
+    // Ping to keep alive
+  }
+}, 20000);
