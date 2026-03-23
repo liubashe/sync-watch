@@ -38,7 +38,7 @@ function startConnectTimeout() {
   connectTimeout = setTimeout(() => {
     resetButtons();
     showToast('连接超时，请检查服务器地址');
-  }, 10000);
+  }, 30000);
 }
 
 function clearConnectTimeout() {
