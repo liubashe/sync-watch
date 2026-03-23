@@ -66,13 +66,16 @@ async def handle_disconnect(ws):
     if not room_id or room_id not in rooms:
         return
     room = rooms[room_id]
-    if action == "host_left_promoted":
-        new_host_id = getattr(room["host"], '_ws_id', '?')
-        log(f"  promoted ws#{new_host_id} to host in room {room_id}")
-        await room["host"].send_str(json.dumps({"type": "promoted", "roomId": room_id}))
-        await broadcast(room_id, {"type": "room_update", "count": len(room["clients"]), "hostChanged": True})
-    elif action == "client_left":
-        await broadcast(room_id, {"type": "room_update", "count": len(room["clients"])})
+    try:
+        if action == "host_left_promoted":
+            new_host_id = getattr(room["host"], '_ws_id', '?')
+            log(f"  promoted ws#{new_host_id} to host in room {room_id}")
+            await room["host"].send_str(json.dumps({"type": "promoted", "roomId": room_id}))
+            await broadcast(room_id, {"type": "room_update", "count": len(room["clients"]), "hostChanged": True})
+        elif action == "client_left":
+            await broadcast(room_id, {"type": "room_update", "count": len(room["clients"])})
+    except Exception as e:
+        log(f"  handle_disconnect error in room {room_id}: {e}")
 
 
 async def websocket_handler(request):
@@ -118,7 +121,10 @@ async def websocket_handler(request):
                 await broadcast(room_id, {"type": "room_update", "count": len(room["clients"])}, exclude=ws)
                 host_id = getattr(room["host"], '_ws_id', '?')
                 log(f"  requesting state from host ws#{host_id}")
-                await room["host"].send_str(json.dumps({"type": "request_state"}))
+                try:
+                    await room["host"].send_str(json.dumps({"type": "request_state"}))
+                except Exception:
+                    log(f"  failed to request state from host ws#{host_id}")
 
             elif msg_type == "sync_event":
                 room_id = getattr(ws, '_room_id', None)
