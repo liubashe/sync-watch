@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 20px;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      letter-spacing: 1px;
+    }
+
+    .header .subtitle {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    .section {
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    .server-input {
+      display: flex;
+      gap: 0;
+      margin-bottom: 16px;
+    }
+
+    .server-input label {
+      font-size: 11px;
+      color: #888;
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #16213e;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input:focus {
+      border-color: #4cc9f0;
+    }
+
+    input::placeholder {
+      color: #555;
+    }
+
+    .room-code-input {
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 11px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.5px;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #4361ee, #3a0ca3);
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #4895ef, #4361ee);
+    }
+
+    .btn-secondary {
+      background: #16213e;
+      color: #4cc9f0;
+      border: 1px solid #333;
+      margin-top: 8px;
+    }
+
+    .btn-secondary:hover {
+      background: #1a2744;
+      border-color: #4cc9f0;
+    }
+
+    .btn-danger {
+      background: #16213e;
+      color: #f72585;
+      border: 1px solid #333;
+      margin-top: 8px;
+    }
+
+    .btn-danger:hover {
+      background: #1a2744;
+      border-color: #f72585;
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      margin: 16px 0;
+      gap: 12px;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #333;
+    }
+
+    .divider span {
+      font-size: 12px;
+      color: #555;
+    }
+
+    /* Room active state */
+    .room-info {
+      background: #16213e;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .room-info .room-code {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 4px;
+      color: #4cc9f0;
+      margin: 8px 0;
+      user-select: all;
+    }
+
+    .room-info .room-role {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .role-host {
+      background: rgba(76, 201, 240, 0.15);
+      color: #4cc9f0;
+    }
+
+    .role-guest {
+      background: rgba(114, 9, 183, 0.2);
+      color: #b5179e;
+    }
+
+    .room-info .count {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .status-dot.connected { background: #4cc9f0; }
+    .status-dot.disconnected { background: #f72585; }
+
+    .toast {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #f72585;
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+      z-index: 100;
+    }
+
+    .toast.show {
+      display: block;
+      animation: fadeInOut 3s ease forwards;
+    }
+
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateX(-50%) translateY(10px); }
+      10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+      80% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    #view-lobby, #view-room {
+      display: none;
+    }
+
+    #view-lobby.active, #view-room.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Sync Watch</h1>
+    <div class="subtitle">与朋友同步观看视频</div>
+  </div>
+
+  <!-- Lobby View -->
+  <div id="view-lobby" class="active">
+    <div class="section">
+      <label style="font-size:11px; color:#888; display:block; margin-bottom:4px;">服务器地址</label>
+      <input type="text" id="server-url" value="ws://localhost:8080" placeholder="ws://localhost:8080">
+    </div>
+
+    <div class="section">
+      <button class="btn btn-primary" id="btn-create">创建房间</button>
+    </div>
+
+    <div class="divider"><span>或加入已有房间</span></div>
+
+    <div class="section">
+      <input type="text" id="room-code" class="room-code-input" placeholder="输入房间号" maxlength="6">
+      <button class="btn btn-secondary" id="btn-join">加入房间</button>
+    </div>
+  </div>
+
+  <!-- Room View -->
+  <div id="view-room">
+    <div class="room-info">
+      <div class="room-role" id="room-role"></div>
+      <div class="room-code" id="room-id"></div>
+      <div class="count">
+        <span class="status-dot connected" id="status-dot"></span>
+        <span id="room-count"></span>
+      </div>
+    </div>
+    <button class="btn btn-danger" id="btn-leave">离开房间</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
