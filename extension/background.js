@@ -6,6 +6,9 @@ let reconnectTimer = null;
 let stateReady = false;
 let pendingMessages = [];
 let outboundQueue = [];
+let contentTabIds = new Set();
+
+const MAX_QUEUE_SIZE = 5;
 
 const stateLoadPromise = new Promise((resolve) => {
   chrome.storage.local.get(['roomId', 'isHost', 'serverUrl'], (state) => {
@@ -30,26 +33,20 @@ const stateLoadPromise = new Promise((resolve) => {
   });
 });
 
-async function getActiveVideoTab() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab) return tab.id;
-    const tabs = await chrome.tabs.query({ active: true });
-    return tabs.length > 0 ? tabs[0].id : null;
-  } catch {
-    return null;
-  }
-}
-
 async function notifyContent(msg) {
-  const tabId = await getActiveVideoTab();
-  if (tabId) {
-    console.log('[SyncWatch BG] -> content tab(' + tabId + '):', msg.type, msg.action || '');
-    chrome.tabs.sendMessage(tabId, msg).catch((e) => {
-      console.log('[SyncWatch BG] Failed to notify content:', e.message);
-    });
-  } else {
-    console.log('[SyncWatch BG] No active tab to notify');
+  if (contentTabIds.size === 0) {
+    console.log('[SyncWatch BG] No content tabs registered');
+    return;
+  }
+  const label = msg.type + ' ' + (msg.action || '');
+  for (const tabId of contentTabIds) {
+    console.log('[SyncWatch BG] -> content tab(' + tabId + '):', label);
+    try {
+      await chrome.tabs.sendMessage(tabId, msg);
+    } catch (e) {
+      console.log('[SyncWatch BG] Failed tab(' + tabId + '):', e.message);
+      contentTabIds.delete(tabId);
+    }
   }
 }
 
@@ -187,6 +184,9 @@ function flushOutboundQueue() {
 
 function sendOrQueue(msg) {
   if (!sendToServer(msg)) {
+    if (outboundQueue.length >= MAX_QUEUE_SIZE) {
+      outboundQueue.shift();
+    }
     outboundQueue.push(msg);
     ensureConnected();
   }
@@ -214,6 +214,10 @@ function leaveRoom() {
 }
 
 function processMessage(msg, sender, sendResponse) {
+  if (sender && sender.tab) {
+    contentTabIds.add(sender.tab.id);
+  }
+
   switch (msg.type) {
     case 'create_room':
       if (msg.serverUrl) serverUrl = msg.serverUrl;
@@ -247,7 +251,7 @@ function processMessage(msg, sender, sendResponse) {
       break;
 
     case 'content_ready':
-      console.log('[SyncWatch BG] Content script ready');
+      console.log('[SyncWatch BG] Content script ready, tab:', sender?.tab?.id);
       if (roomId) {
         ensureConnected();
         notifyContent({ type: 'role_update', isHost });
@@ -264,4 +268,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   processMessage(msg, sender, sendResponse);
   if (msg.type === 'get_state') return true;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  contentTabIds.delete(tabId);
 });
