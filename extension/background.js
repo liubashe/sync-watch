@@ -33,9 +33,24 @@ const stateLoadPromise = new Promise((resolve) => {
   });
 });
 
+async function discoverContentTabs() {
+  const patterns = ['*://*.youtube.com/*', '*://*.bilibili.com/*'];
+  for (const url of patterns) {
+    try {
+      const tabs = await chrome.tabs.query({ url });
+      for (const tab of tabs) {
+        contentTabIds.add(tab.id);
+      }
+    } catch {}
+  }
+}
+
 async function notifyContent(msg) {
   if (contentTabIds.size === 0) {
-    console.log('[SyncWatch BG] No content tabs registered');
+    await discoverContentTabs();
+  }
+  if (contentTabIds.size === 0) {
+    console.log('[SyncWatch BG] No content tabs found');
     return;
   }
   const label = msg.type + ' ' + (msg.action || '');
