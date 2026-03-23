@@ -4,7 +4,9 @@ import os
 import random
 import string
 import time
+from http import HTTPStatus
 from websockets.asyncio.server import serve
+from websockets.http11 import Response
 
 rooms = {}  # roomId -> { "host": ws, "clients": set(ws) }
 
@@ -138,9 +140,15 @@ async def handler(ws):
         await handle_disconnect(ws)
 
 
+def health_check(connection, request):
+    if request.path == "/health":
+        return Response(HTTPStatus.OK, "OK\n", connection.response_headers)
+    return None
+
+
 async def main():
     port = int(os.environ.get("PORT", 8080))
-    async with serve(handler, "0.0.0.0", port):
+    async with serve(handler, "0.0.0.0", port, process_request=health_check):
         print(f"Sync-Watch server running on port {port}")
         await asyncio.get_running_loop().create_future()  # run forever
 
